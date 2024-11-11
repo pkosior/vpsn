@@ -1,0 +1,58 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Deploy to VPS using SCP and SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          # Dodanie klucza prywatnego do agenta SSH
+          echo "${SSH_PRIVATE_KEY}" > private_key.pem
+          chmod 600 private_key.pem
+          eval $(ssh-agent -s)
+          ssh-add private_key.pem
+
+          # Upewnij się, że katalog .ssh istnieje
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Zaufanie do hosta VPS
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+          # Usuwanie poprzednich plików na serwerze VPS, jeśli istnieją
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "rm -rf /var/www/dev.4tom.co/* || true"
+
+          # Kopiowanie niezbędnych plików na serwer VPS za pomocą SCP
+          scp -r public package.json package-lock.json .next ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/dev.4tom.co/
+
+          # Instalacja zależności i uruchomienie aplikacji na serwerze VPS
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            source ~/.zshrc;
+            cd /var/www/dev.4tom.co &&
+            npm ci --only=production &&
+            pm2 restart nextjs-app || pm2 start npm --name 'nextjs-app' -- start
+          "
+        shell: bash
